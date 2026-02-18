@@ -261,7 +261,7 @@ func (proc *Processor) decodeSnapshot(
 	initialState HashState,
 	validateMACs bool,
 	newMutationsInput []Mutation,
-) (newMutations []Mutation, currentState HashState, err error) {
+) (newMutations []Mutation, currentState HashState, hashDiverged bool, err error) {
 	currentState = initialState
 	currentState.Version = ss.GetVersion().GetVersion()
 
@@ -293,12 +293,13 @@ func (proc *Processor) decodeSnapshot(
 			// mutations are still valid. Log and continue instead of aborting.
 			proc.Log.Warnf("Skipping snapshot LTHash verification for %s v%d: %v", name, currentState.Version, err)
 			err = nil
+			hashDiverged = true
 		}
 	}
 
 	var out patchOutput
 	out.Mutations = newMutationsInput
-	err = proc.decodeMutations(ctx, encryptedMutations, &out, validateMACs, currentState.Version, fakeIndexesToRemove)
+	err = proc.decodeMutations(ctx, encryptedMutations, &out, validateMACs && !hashDiverged, currentState.Version, fakeIndexesToRemove)
 	if err != nil {
 		err = fmt.Errorf("failed to decode snapshot of v%d: %w", currentState.Version, err)
 		return
@@ -382,14 +383,13 @@ func (proc *Processor) DecodePatches(
 	}
 	newMutations = make([]Mutation, 0, expectedLength)
 
+	hashDiverged := false
 	if list.Snapshot != nil {
-		newMutations, currentState, err = proc.decodeSnapshot(ctx, list.Name, list.Snapshot, currentState, validateMACs, newMutations)
+		newMutations, currentState, hashDiverged, err = proc.decodeSnapshot(ctx, list.Name, list.Snapshot, currentState, validateMACs, newMutations)
 		if err != nil {
 			return
 		}
 	}
-
-	hashDiverged := false
 	for _, patch := range list.Patches {
 		var out patchOutput
 		var warn []error
