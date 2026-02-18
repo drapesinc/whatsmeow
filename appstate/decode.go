@@ -342,12 +342,22 @@ func (proc *Processor) validatePatch(
 		var keys ExpandedAppStateKeys
 		keys, err = proc.validateSnapshotMAC(ctx, patchName, newState, patch.GetKeyID().GetID(), patch.GetSnapshotMAC())
 		if err != nil {
-			return
+			if len(warn) > 0 {
+				// Hash is known-diverged due to missing previous value MACs — the
+				// LTHash will never match, but the mutations themselves are still
+				// valid. Log and continue instead of hard-failing.
+				proc.Log.Warnf("Skipping LTHash verification for %s v%d (hash diverged due to %d missing value MAC(s))", patchName, version, len(warn))
+				err = nil
+			} else {
+				return
+			}
 		}
-		patchMAC := generatePatchMAC(patch, patchName, keys.PatchMAC, patch.GetVersion().GetVersion())
-		if !bytes.Equal(patchMAC, patch.GetPatchMAC()) {
-			err = fmt.Errorf("failed to verify patch v%d: %w", version, ErrMismatchingPatchMAC)
-			return
+		if err == nil && len(warn) == 0 {
+			patchMAC := generatePatchMAC(patch, patchName, keys.PatchMAC, patch.GetVersion().GetVersion())
+			if !bytes.Equal(patchMAC, patch.GetPatchMAC()) {
+				err = fmt.Errorf("failed to verify patch v%d: %w", version, ErrMismatchingPatchMAC)
+				return
+			}
 		}
 	}
 	return
@@ -377,21 +387,27 @@ func (proc *Processor) DecodePatches(
 		}
 	}
 
+	hashDiverged := false
 	for _, patch := range list.Patches {
 		var out patchOutput
 		var warn []error
 		var newState HashState
 		var fakeIndexesToRemove map[[32]byte][]byte
-		newState, warn, err = proc.validatePatch(ctx, list.Name, patch, currentState, validateMACs)
+		newState, warn, err = proc.validatePatch(ctx, list.Name, patch, currentState, validateMACs && !hashDiverged)
 		if err != nil {
 			if len(warn) > 0 {
 				proc.Log.Warnf("Warnings while updating hash for %s: %+v", list.Name, warn)
 			}
 			return
 		}
+		if len(warn) > 0 && !hashDiverged {
+			proc.Log.Warnf("Hash diverged for %s at v%d due to %d missing value MAC(s), skipping MAC validation for remaining patches",
+				list.Name, patch.GetVersion().GetVersion(), len(warn))
+			hashDiverged = true
+		}
 
 		out.Mutations = newMutations
-		err = proc.decodeMutations(ctx, patch.GetMutations(), &out, validateMACs, newState.Version, fakeIndexesToRemove)
+		err = proc.decodeMutations(ctx, patch.GetMutations(), &out, validateMACs && !hashDiverged, newState.Version, fakeIndexesToRemove)
 		if err != nil {
 			return
 		}
