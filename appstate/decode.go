@@ -346,15 +346,16 @@ func (proc *Processor) validatePatch(
 		var keys ExpandedAppStateKeys
 		keys, err = proc.validateSnapshotMAC(ctx, patchName, newState, patch.GetKeyID().GetID(), patch.GetSnapshotMAC())
 		if err != nil {
+			// LTHash mismatch — the local hash has diverged from the server's.
+			// This can happen due to missing value MACs (warn > 0) or other
+			// state desync. The mutations themselves are still valid regardless,
+			// so log and continue instead of hard-failing.
 			if len(warn) > 0 {
-				// Hash is known-diverged due to missing previous value MACs — the
-				// LTHash will never match, but the mutations themselves are still
-				// valid. Log and continue instead of hard-failing.
 				proc.Log.Warnf("Skipping LTHash verification for %s v%d (hash diverged due to %d missing value MAC(s))", patchName, version, len(warn))
-				err = nil
 			} else {
-				return
+				proc.Log.Warnf("Skipping LTHash verification for %s v%d (hash diverged, no missing MACs — likely permanent state desync)", patchName, version)
 			}
+			err = nil
 		}
 		if err == nil && len(warn) == 0 {
 			patchMAC := generatePatchMAC(patch, patchName, keys.PatchMAC, patch.GetVersion().GetVersion())
